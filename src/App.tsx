@@ -1,12 +1,9 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Settings, 
   HelpCircle, 
   Layers, 
   MessageSquare, 
-  Share2, 
-  CheckCircle2, 
-  Sparkles,
   Zap
 } from 'lucide-react';
 import { MetaCapiConfig, ClosingEvent } from './types';
@@ -17,6 +14,8 @@ import { SettingsModal } from './components/SettingsModal';
 import { QuickGuideModal } from './components/QuickGuideModal';
 import { WaLinkGeneratorModal } from './components/WaLinkGeneratorModal';
 import { BatchClosingModal } from './components/BatchClosingModal';
+import { ToastNotification } from './components/ToastNotification';
+import { useToast } from './utils/toast';
 
 const DEFAULT_CONFIG: MetaCapiConfig = {
   pixelId: '',
@@ -25,7 +24,8 @@ const DEFAULT_CONFIG: MetaCapiConfig = {
   autoTestMode: false,
   defaultCurrency: 'IDR',
   defaultAdminName: 'CS Admin',
-  actionSource: 'chat'
+  actionSource: 'chat',
+  productPresets: []
 };
 
 const INITIAL_SAMPLE_EVENTS: ClosingEvent[] = [
@@ -48,7 +48,8 @@ const INITIAL_SAMPLE_EVENTS: ClosingEvent[] = [
     status: 'success',
     testMode: false,
     eventId: 'wa_event_WA-260910-4821_1725968400',
-    fbtraceId: 'E_fbtrace_94821_demo'
+    fbtraceId: 'E_fbtrace_94821_demo',
+    emqScore: 100
   },
   {
     id: 'evt_sample_2',
@@ -68,7 +69,8 @@ const INITIAL_SAMPLE_EVENTS: ClosingEvent[] = [
     status: 'success',
     testMode: false,
     eventId: 'wa_event_WA-260910-1092_1725957600',
-    fbtraceId: 'E_fbtrace_10922_demo'
+    fbtraceId: 'E_fbtrace_10922_demo',
+    emqScore: 55
   }
 ];
 
@@ -77,7 +79,10 @@ export default function App() {
   const [config, setConfig] = useState<MetaCapiConfig>(() => {
     try {
       const saved = localStorage.getItem('meta_capi_config');
-      return saved ? JSON.parse(saved) : DEFAULT_CONFIG;
+      if (!saved) return DEFAULT_CONFIG;
+      const parsed = JSON.parse(saved);
+      // Ensure productPresets exists for backward compat
+      return { ...DEFAULT_CONFIG, ...parsed, productPresets: parsed.productPresets || [] };
     } catch {
       return DEFAULT_CONFIG;
     }
@@ -99,6 +104,9 @@ export default function App() {
   const [isWaLinkOpen, setIsWaLinkOpen] = useState(false);
   const [isBatchOpen, setIsBatchOpen] = useState(false);
 
+  // Toast system
+  const { toasts, showToast, dismissToast } = useToast();
+
   // Sync to localStorage
   useEffect(() => {
     try {
@@ -118,6 +126,7 @@ export default function App() {
 
   const handleSaveConfig = (newConfig: MetaCapiConfig) => {
     setConfig(newConfig);
+    showToast('Pengaturan berhasil disimpan', 'success');
   };
 
   const handleEventSent = (newEvent: ClosingEvent) => {
@@ -130,6 +139,7 @@ export default function App() {
 
   const handleClearHistory = () => {
     setEvents([]);
+    showToast('Riwayat berhasil dihapus', 'info');
   };
 
   const handleResendEvent = async (eventToResend: ClosingEvent) => {
@@ -137,6 +147,8 @@ export default function App() {
       setIsSettingsOpen(true);
       return;
     }
+
+    showToast('Mengirim ulang event...', 'info');
 
     try {
       const payload = {
@@ -179,75 +191,63 @@ export default function App() {
               : e
           )
         );
-        alert(`Event ${eventToResend.orderId} berhasil dikirim ulang ke Meta CAPI!`);
+        showToast(`Event ${eventToResend.orderId} berhasil dikirim ulang!`, 'success', `fbtrace: ${data.fbtraceId}`);
       } else {
-        alert(`Gagal mengirim ulang: ${data.message || 'Ditolak oleh Meta'}`);
+        showToast(`Gagal mengirim ulang: ${eventToResend.orderId}`, 'error', data.message || 'Ditolak oleh Meta');
       }
     } catch (err: any) {
-      alert(`Error koneksi: ${err.message}`);
+      showToast('Error koneksi saat resend', 'error', err.message);
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
+    <div className="min-h-screen bg-slate-50 text-slate-800" style={{ fontFamily: "'Inter', sans-serif" }}>
       {/* Top Navigation Bar */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-emerald-500 text-white flex items-center justify-center shadow-xs">
-              <Zap className="w-5 h-5 fill-current" />
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-emerald-500 text-white flex items-center justify-center shadow-sm">
+              <Zap className="w-4 h-4 sm:w-5 sm:h-5 fill-current" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-base font-bold text-slate-900 tracking-tight">
-                  Meta CAPI WhatsApp Tracker
+                <h1 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight">
+                  Meta CAPI WA Tracker
                 </h1>
-                <span className="text-[11px] font-semibold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-200 hidden sm:inline">
+                <span className="text-[10px] sm:text-[11px] font-semibold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-200 hidden sm:inline">
                   Tanpa Biaya WA Cloud API
                 </span>
               </div>
-              <p className="text-xs text-slate-500 hidden sm:block">
-                Sinkronisasi Omset &amp; Leads Closing WhatsApp Langsung ke Meta Ads Manager
+              <p className="text-[10px] sm:text-xs text-slate-500 hidden sm:block">
+                Sinkronisasi Omset & Leads Closing WhatsApp ke Meta Ads Manager
               </p>
             </div>
           </div>
 
           {/* Action Buttons */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <NavButton
               onClick={() => setIsBatchOpen(true)}
-              className="px-3 py-1.5 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-100 text-xs font-medium flex items-center gap-1.5 transition-colors"
-            >
-              <Layers className="w-3.5 h-3.5 text-blue-600" />
-              <span className="hidden md:inline">Kirim Massal</span>
-            </button>
-
-            <button
-              type="button"
+              icon={<Layers className="w-3.5 h-3.5 text-blue-600" />}
+              label="Kirim Massal"
+            />
+            <NavButton
               onClick={() => setIsWaLinkOpen(true)}
-              className="px-3 py-1.5 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-100 text-xs font-medium flex items-center gap-1.5 transition-colors"
-            >
-              <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
-              <span className="hidden md:inline">Link WA + Ref</span>
-            </button>
-
-            <button
-              type="button"
+              icon={<MessageSquare className="w-3.5 h-3.5 text-emerald-600" />}
+              label="Link WA + Ref"
+            />
+            <NavButton
               onClick={() => setIsGuideOpen(true)}
-              className="px-3 py-1.5 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-100 text-xs font-medium flex items-center gap-1.5 transition-colors"
-            >
-              <HelpCircle className="w-3.5 h-3.5 text-amber-600" />
-              <span className="hidden md:inline">Panduan CAPI</span>
-            </button>
-
+              icon={<HelpCircle className="w-3.5 h-3.5 text-amber-600" />}
+              label="Panduan"
+            />
             <button
               type="button"
               onClick={() => setIsSettingsOpen(true)}
-              className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium flex items-center gap-1.5 shadow-xs transition-colors"
+              className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium flex items-center gap-1.5 shadow-sm transition-colors"
             >
               <Settings className="w-3.5 h-3.5" />
-              <span>Pengaturan CAPI</span>
+              <span className="hidden sm:inline">Pengaturan</span>
             </button>
           </div>
         </div>
@@ -261,17 +261,18 @@ export default function App() {
         {/* Closing Entry Form */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-slate-900">
+            <h2 className="text-sm sm:text-base font-semibold text-slate-900">
               Form Input Closing WhatsApp ke Meta Ads
             </h2>
-            <span className="text-xs text-slate-500">
-              Enkripsi SHA-256 Otomatis Sesuai Regulasi Meta
+            <span className="text-xs text-slate-500 hidden sm:block">
+              Enkripsi SHA-256 Otomatis • Sesuai Regulasi Meta
             </span>
           </div>
           <ClosingForm
             config={config}
             onEventSent={handleEventSent}
             onOpenSettings={() => setIsSettingsOpen(true)}
+            showToast={showToast}
           />
         </div>
 
@@ -283,6 +284,11 @@ export default function App() {
           onResendEvent={handleResendEvent}
         />
       </main>
+
+      {/* Footer */}
+      <footer className="border-t border-slate-200 py-4 text-center text-xs text-slate-400 mt-8">
+        Meta CAPI WhatsApp Tracker • Data dienkripsi SHA-256 sebelum dikirim ke Meta
+      </footer>
 
       {/* Modals */}
       <SettingsModal
@@ -307,7 +313,33 @@ export default function App() {
         onClose={() => setIsBatchOpen(false)}
         config={config}
         onBatchCompleted={handleBatchCompleted}
+        showToast={showToast}
       />
+
+      {/* Toast Notifications */}
+      <ToastNotification toasts={toasts} onDismiss={dismissToast} />
     </div>
+  );
+}
+
+// Reusable nav button component
+function NavButton({ 
+  onClick, 
+  icon, 
+  label 
+}: { 
+  onClick: () => void; 
+  icon: React.ReactNode; 
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="px-2.5 sm:px-3 py-1.5 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-100 text-xs font-medium flex items-center gap-1.5 transition-colors"
+    >
+      {icon}
+      <span className="hidden md:inline">{label}</span>
+    </button>
   );
 }

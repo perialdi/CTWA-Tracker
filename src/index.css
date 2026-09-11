@@ -1,1 +1,294 @@
 @import "tailwindcss";
+
+/* =============================================
+   CTWA TRACKER — GLOBAL DESIGN SYSTEM
+   ============================================= */
+
+:root {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+  --transition-slow: 400ms ease;
+  
+  /* Shadows */
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-modal: 0 20px 60px rgba(0,0,0,0.15), 0 8px 20px rgba(0,0,0,0.08);
+  --shadow-dropdown: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+/* Base font */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* =============================================
+   ANIMATIONS
+   ============================================= */
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(100%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideOutRight {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(100%); }
+}
+
+@keyframes pulseSoft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes countUp {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* Animation utility classes */
+.animate-fade-in { animation: fadeIn 0.25s ease forwards; }
+.animate-slide-up { animation: slideUp 0.3s ease forwards; }
+.animate-slide-down { animation: slideDown 0.25s ease forwards; }
+.animate-scale-in { animation: scaleIn 0.2s ease forwards; }
+.animate-count-up { animation: countUp 0.4s ease forwards; }
+.animate-pulse-soft { animation: pulseSoft 2s ease infinite; }
+
+/* =============================================
+   TOAST NOTIFICATION SYSTEM
+   ============================================= */
+
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  pointer-events: none;
+  max-width: 380px;
+  width: 100%;
+}
+
+.toast-item {
+  pointer-events: all;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  box-shadow: var(--shadow-modal);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  animation: slideInRight 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  backdrop-filter: blur(12px);
+  transition: all var(--transition-normal);
+}
+
+.toast-item.toast-exiting {
+  animation: slideOutRight 0.25s ease forwards;
+}
+
+.toast-success {
+  background: rgba(236, 253, 245, 0.97);
+  border-color: #a7f3d0;
+  color: #065f46;
+}
+
+.toast-error {
+  background: rgba(255, 241, 242, 0.97);
+  border-color: #fecdd3;
+  color: #881337;
+}
+
+.toast-warning {
+  background: rgba(255, 251, 235, 0.97);
+  border-color: #fde68a;
+  color: #78350f;
+}
+
+.toast-info {
+  background: rgba(239, 246, 255, 0.97);
+  border-color: #bfdbfe;
+  color: #1e3a5f;
+}
+
+.toast-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+}
+
+.toast-close {
+  margin-left: auto;
+  flex-shrink: 0;
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+  background: none;
+  border: none;
+  padding: 0;
+  display: flex;
+  align-items: center;
+}
+
+.toast-close:hover { opacity: 1; }
+
+/* =============================================
+   EMQ INDICATOR
+   ============================================= */
+
+.emq-bar {
+  height: 6px;
+  border-radius: 9999px;
+  transition: width 0.5s cubic-bezier(0.34, 1.2, 0.64, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.emq-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  animation: shimmer 1.5s ease infinite;
+  background-size: 200% 100%;
+}
+
+/* =============================================
+   STATS CARD IMPROVEMENTS
+   ============================================= */
+
+.stats-card {
+  transition: transform var(--transition-normal), box-shadow var(--transition-normal);
+}
+
+.stats-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+}
+
+/* =============================================
+   TABLE IMPROVEMENTS
+   ============================================= */
+
+.table-row-enter {
+  animation: slideDown 0.2s ease forwards;
+}
+
+/* =============================================
+   FORM FIELD FOCUS IMPROVEMENTS
+   ============================================= */
+
+input:focus, textarea:focus, select:focus {
+  outline: none;
+}
+
+/* Custom scrollbar for modals */
+.modal-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.modal-scroll::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 9999px;
+}
+
+.modal-scroll::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+
+.modal-scroll::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* =============================================
+   BUTTON ANIMATIONS
+   ============================================= */
+
+button {
+  transition: all var(--transition-fast);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Success button state */
+.btn-success-state {
+  background: #059669 !important;
+  pointer-events: none;
+}
+
+/* =============================================
+   GRADIENT BACKGROUNDS
+   ============================================= */
+
+.gradient-emerald {
+  background: linear-gradient(135deg, #059669 0%, #0d9488 100%);
+}
+
+.gradient-blue {
+  background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+}
+
+.gradient-purple {
+  background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%);
+}
+
+/* =============================================
+   RESPONSIVE MOBILE IMPROVEMENTS
+   ============================================= */
+
+@media (max-width: 640px) {
+  .toast-container {
+    bottom: 16px;
+    right: 16px;
+    left: 16px;
+    max-width: none;
+  }
+}

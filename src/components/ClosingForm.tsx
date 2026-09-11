@@ -1,4 +1,4 @@
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useEffect, useRef } from 'react';
 import { 
   Send, 
   CheckCircle2, 
@@ -16,27 +16,30 @@ import {
   Mail,
   MapPin,
   Tag,
-  Hash
+  Hash,
+  Package
 } from 'lucide-react';
 import { MetaCapiConfig, ClosingEvent, MetaEventType, LeadQuality } from '../types';
-import { formatIndonesianPhone, formatRupiah, cleanNumeric, generateOrderId } from '../utils/formatters';
+import { formatIndonesianPhone, formatRupiah, cleanNumeric, generateOrderId, calculateEMQ } from '../utils/formatters';
+import { EmqIndicator } from './EmqIndicator';
 
 interface ClosingFormProps {
   config: MetaCapiConfig;
   onEventSent: (event: ClosingEvent) => void;
   onOpenSettings: () => void;
+  showToast: (title: string, type?: any, message?: string) => void;
 }
 
 const PRESET_AMOUNTS = [150000, 250000, 350000, 500000, 750000, 1000000];
 
-const SAMPLE_PRODUCTS = [
+const DEFAULT_SAMPLE_PRODUCTS = [
   'Paket Promo Glowing',
   'Paket Acne Care',
   'Serum Booster Anti-Aging',
   'Paket Reseller Starter'
 ];
 
-export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingFormProps) {
+export function ClosingForm({ config, onEventSent, onOpenSettings, showToast }: ClosingFormProps) {
   const [eventType, setEventType] = useState<MetaEventType>('Purchase');
   
   // Form fields
@@ -45,7 +48,7 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
   const [customerEmail, setCustomerEmail] = useState('');
   const [customerCity, setCustomerCity] = useState('');
   const [valueStr, setValueStr] = useState('350000');
-  const [productName, setProductName] = useState('Paket Promo Glowing');
+  const [productName, setProductName] = useState('');
   const [quantity, setQuantity] = useState(1);
   const [leadQuality, setLeadQuality] = useState<LeadQuality>('Hot Lead (Siap Bayar)');
   const [adminName, setAdminName] = useState(config.defaultAdminName || 'CS 01');
@@ -55,6 +58,7 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
 
   // Status handling
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitSuccess, setSubmitSuccess] = useState(false);
   const [resultStatus, setResultStatus] = useState<{
     type: 'success' | 'error';
     message: string;
@@ -62,11 +66,45 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
     eventId?: string;
   } | null>(null);
 
+  const phoneInputRef = useRef<HTMLInputElement>(null);
+
+  // Sync admin name when config changes
+  useEffect(() => {
+    if (config.defaultAdminName) {
+      setAdminName(config.defaultAdminName);
+    }
+  }, [config.defaultAdminName]);
+
+  // Auto-focus phone field on mount
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      phoneInputRef.current?.focus();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, []);
+
   const phoneValidation = formatIndonesianPhone(customerPhone);
   const numericValue = cleanNumeric(valueStr);
+  const emqScore = calculateEMQ({ phone: customerPhone, name: customerName, email: customerEmail, city: customerCity });
+
+  // Get product list from config presets + defaults
+  const productList = config.productPresets && config.productPresets.length > 0
+    ? config.productPresets.map(p => p.name)
+    : DEFAULT_SAMPLE_PRODUCTS;
 
   const handleAmountSelect = (val: number) => {
     setValueStr(val.toString());
+  };
+
+  const handleProductSelect = (prod: string) => {
+    setProductName(prod);
+    // Also auto-fill price if preset has price
+    if (config.productPresets) {
+      const preset = config.productPresets.find(p => p.name === prod);
+      if (preset && preset.price > 0) {
+        setValueStr(preset.price.toString());
+      }
+    }
   };
 
   const handleQuickReset = () => {
@@ -75,10 +113,16 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
     setCustomerEmail('');
     setCustomerCity('');
     setValueStr('350000');
+    setProductName('');
+    setQuantity(1);
+    setLeadQuality('Hot Lead (Siap Bayar)');
+    setAdminName(config.defaultAdminName || 'CS 01');
     setOrderId(generateOrderId());
     setFbclid('');
     setNotes('');
     setResultStatus(null);
+    setSubmitSuccess(false);
+    setTimeout(() => phoneInputRef.current?.focus(), 50);
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -144,7 +188,7 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
           customerCity,
           value: eventType === 'Purchase' ? numericValue : 0,
           currency: 'IDR',
-          productName,
+          productName: productName || 'Produk Standar',
           quantity,
           orderId,
           leadQuality: eventType === 'Lead' ? leadQuality : undefined,
@@ -155,94 +199,79 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
           testMode: Boolean(config.testEventCode),
           eventId: data.eventId,
           fbtraceId: data.fbtraceId,
-          rawMetaResponse: data.rawMetaResponse
+          rawMetaResponse: data.rawMetaResponse,
+          emqScore
         };
 
         onEventSent(newEvent);
+        
+        setSubmitSuccess(true);
         setResultStatus({
           type: 'success',
-          message: `Data ${eventType} berhasil diterima oleh Meta CAPI! Omset: ${formatRupiah(numericValue)}`,
+          message: `Event ${eventType} berhasil dikirim ke Meta CAPI! ${eventType === 'Purchase' ? `Omset: ${formatRupiah(numericValue)}` : ''}`,
           fbtraceId: data.fbtraceId,
           eventId: data.eventId
         });
 
+        showToast(
+          `✅ ${eventType === 'Purchase' ? `Closing ${formatRupiah(numericValue)} berhasil dikirim!` : `Event ${eventType} terkirim!`}`,
+          'success',
+          `Order ID: ${orderId} • fbtrace: ${data.fbtraceId || '-'}`
+        );
+
         // Generate next order ID automatically
         setOrderId(generateOrderId());
+        
+        // Reset success state after 3 seconds
+        setTimeout(() => setSubmitSuccess(false), 3000);
       } else {
         setResultStatus({
           type: 'error',
           message: data.message || 'Meta CAPI menolak pengiriman event. Periksa Token & Pixel ID Anda.',
           fbtraceId: data.metaError?.fbtrace_id
         });
+        showToast('Gagal mengirim event ke Meta CAPI', 'error', data.message);
       }
     } catch (err: any) {
       setResultStatus({
         type: 'error',
         message: err.message || 'Gagal menghubungi server aplikasi.'
       });
+      showToast('Error koneksi ke server', 'error', err.message);
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  const EVENT_TABS = [
+    { type: 'Purchase' as MetaEventType, label: 'Closing (Purchase)', icon: <DollarSign className="w-4 h-4" />, activeClass: 'bg-emerald-600 text-white shadow-sm' },
+    { type: 'Lead' as MetaEventType, label: 'Prospek (Lead)', icon: <Target className="w-4 h-4" />, activeClass: 'bg-blue-600 text-white shadow-sm' },
+    { type: 'InitiateCheckout' as MetaEventType, label: 'Minta Rekening', icon: <ShoppingCart className="w-4 h-4" />, activeClass: 'bg-purple-600 text-white shadow-sm' },
+    { type: 'Contact' as MetaEventType, label: 'Chat Masuk', icon: <MessageSquare className="w-4 h-4" />, activeClass: 'bg-amber-600 text-white shadow-sm' },
+  ];
+
   return (
-    <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+    <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[var(--shadow-card)] overflow-hidden">
       {/* Event Type Selector Tabs */}
       <div className="border-b border-slate-100 bg-slate-50/70 p-2 flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => setEventType('Purchase')}
-          className={`flex-1 min-w-[130px] py-2.5 px-3 rounded-xl font-medium text-xs sm:text-sm flex items-center justify-center gap-2 transition-all ${
-            eventType === 'Purchase'
-              ? 'bg-emerald-600 text-white shadow-xs'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-          }`}
-        >
-          <DollarSign className="w-4 h-4" />
-          <span>Closing (Purchase)</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setEventType('Lead')}
-          className={`flex-1 min-w-[130px] py-2.5 px-3 rounded-xl font-medium text-xs sm:text-sm flex items-center justify-center gap-2 transition-all ${
-            eventType === 'Lead'
-              ? 'bg-blue-600 text-white shadow-xs'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-          }`}
-        >
-          <Target className="w-4 h-4" />
-          <span>Prospek (Lead)</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setEventType('InitiateCheckout')}
-          className={`flex-1 min-w-[130px] py-2.5 px-3 rounded-xl font-medium text-xs sm:text-sm flex items-center justify-center gap-2 transition-all ${
-            eventType === 'InitiateCheckout'
-              ? 'bg-purple-600 text-white shadow-xs'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-          }`}
-        >
-          <ShoppingCart className="w-4 h-4" />
-          <span>Minta Rekening</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setEventType('Contact')}
-          className={`flex-1 min-w-[130px] py-2.5 px-3 rounded-xl font-medium text-xs sm:text-sm flex items-center justify-center gap-2 transition-all ${
-            eventType === 'Contact'
-              ? 'bg-amber-600 text-white shadow-xs'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-          }`}
-        >
-          <MessageSquare className="w-4 h-4" />
-          <span>Chat Masuk</span>
-        </button>
+        {EVENT_TABS.map(tab => (
+          <button
+            key={tab.type}
+            type="button"
+            onClick={() => setEventType(tab.type)}
+            className={`flex-1 min-w-[130px] py-2.5 px-3 rounded-xl font-medium text-xs sm:text-sm flex items-center justify-center gap-2 transition-all ${
+              eventType === tab.type
+                ? tab.activeClass
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+            }`}
+          >
+            {tab.icon}
+            <span>{tab.label}</span>
+          </button>
+        ))}
       </div>
 
-      {/* Test Mode Indicator Banner */}
+      {/* Test Mode / Config Warning Banner */}
       {config.testEventCode ? (
         <div className="bg-amber-50 px-5 py-2.5 border-b border-amber-200/80 flex items-center justify-between text-xs text-amber-900">
           <div className="flex items-center gap-2">
@@ -270,23 +299,23 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
       ) : null}
 
       {/* Form Body */}
-      <form onSubmit={handleSubmit} className="p-6 space-y-5">
+      <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-5">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {/* Kolom Kiri: Data Customer */}
           <div className="space-y-4">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
               <User className="w-3.5 h-3.5" />
-              1. Data Pelanggan WhatsApp (Advanced Matching)
+              1. Data Pelanggan WhatsApp
             </h3>
 
             {/* Nomor WA */}
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center justify-between">
-                <span>Nomor WhatsApp Pelanggan <span className="text-red-500">*</span></span>
+              <label className="flex items-center justify-between text-xs font-semibold text-slate-700 mb-1">
+                <span>Nomor WhatsApp <span className="text-red-500">*</span></span>
                 {phoneValidation.isValid && (
                   <span className="text-[11px] text-emerald-600 font-normal flex items-center gap-1">
                     <ShieldCheck className="w-3.5 h-3.5" />
-                    Meta format: {phoneValidation.display}
+                    {phoneValidation.display}
                   </span>
                 )}
               </label>
@@ -295,24 +324,23 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
                   <Phone className="w-4 h-4" />
                 </div>
                 <input
+                  ref={phoneInputRef}
                   type="text"
                   required
                   placeholder="Contoh: 081234567890 / 62812..."
                   value={customerPhone}
                   onChange={(e) => setCustomerPhone(e.target.value)}
-                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-mono"
+                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-mono transition-colors"
                 />
               </div>
-              <p className="text-[11px] text-slate-500 mt-1">
-                Otomatis diubah ke format internasional dan dienkripsi <strong>SHA-256</strong> sebelum dikirim.
+              <p className="text-[11px] text-slate-400 mt-1">
+                Otomatis diformat ke internasional & dienkripsi <strong>SHA-256</strong>.
               </p>
             </div>
 
             {/* Nama Pelanggan */}
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Nama Lengkap Pelanggan
-              </label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Nama Lengkap</label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                   <User className="w-4 h-4" />
@@ -322,17 +350,15 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
                   placeholder="Contoh: Budi Santoso"
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}
-                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                 />
               </div>
             </div>
 
-            {/* Email Pelanggan (Optional) */}
+            {/* Email & Kota */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Email (Opsional)
-                </label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Email (Opsional)</label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
                     <Mail className="w-3.5 h-3.5" />
@@ -342,15 +368,13 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
                     placeholder="budi@gmail.com"
                     value={customerEmail}
                     onChange={(e) => setCustomerEmail(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Kota / Domisili (Opsional)
-                </label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Kota (Opsional)</label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
                     <MapPin className="w-3.5 h-3.5" />
@@ -360,17 +384,25 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
                     placeholder="Jakarta / Surabaya"
                     value={customerCity}
                     onChange={(e) => setCustomerCity(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                   />
                 </div>
               </div>
             </div>
 
-            {/* Lead Quality Selector if event is Lead */}
+            {/* EMQ Indicator */}
+            <EmqIndicator
+              phone={customerPhone}
+              name={customerName}
+              email={customerEmail}
+              city={customerCity}
+            />
+
+            {/* Lead Quality Selector */}
             {eventType === 'Lead' && (
-              <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-200">
+              <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-200 animate-fade-in">
                 <label className="block text-xs font-semibold text-blue-900 mb-1.5">
-                  Tingkat Kualitas Lead (Prospek)
+                  Tingkat Kualitas Lead
                 </label>
                 <div className="grid grid-cols-3 gap-2">
                   {(['Hot Lead (Siap Bayar)', 'Warm Lead (Tertarik)', 'Cold Lead (Baru Nanya)'] as LeadQuality[]).map((q) => (
@@ -380,7 +412,7 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
                       onClick={() => setLeadQuality(q)}
                       className={`p-2 rounded-lg text-center text-xs font-medium border transition-all ${
                         leadQuality === q
-                          ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
                           : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                       }`}
                     >
@@ -392,18 +424,18 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
             )}
           </div>
 
-          {/* Kolom Kanan: Data Transaksi & Omset */}
+          {/* Kolom Kanan: Data Transaksi */}
           <div className="space-y-4">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
               <DollarSign className="w-3.5 h-3.5" />
               2. Data Nilai Transaksi / Omset
             </h3>
 
-            {/* Nominal Omset (Only relevant for Purchase or checkout) */}
+            {/* Nominal */}
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-xs font-semibold text-slate-700">
-                  {eventType === 'Purchase' ? 'Nilai Omset / Penjualan Closing' : 'Estimasi Nilai Transaksi'} <span className="text-red-500">*</span>
+                  {eventType === 'Purchase' ? 'Nilai Omset Closing' : 'Estimasi Nilai'} <span className="text-red-500">*</span>
                 </label>
                 <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                   {formatRupiah(numericValue)}
@@ -415,10 +447,11 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
                 </span>
                 <input
                   type="text"
+                  inputMode="numeric"
                   placeholder="350000"
                   value={valueStr}
                   onChange={(e) => setValueStr(e.target.value.replace(/[^\d]/g, ''))}
-                  className="w-full pl-11 pr-3.5 py-2.5 rounded-xl border border-slate-200 text-base font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  className="w-full pl-11 pr-3.5 py-2.5 rounded-xl border border-slate-200 text-base font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-colors"
                 />
               </div>
 
@@ -429,7 +462,11 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
                     key={amt}
                     type="button"
                     onClick={() => handleAmountSelect(amt)}
-                    className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-[11px] font-medium transition-colors"
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                      numericValue === amt
+                        ? 'bg-emerald-100 text-emerald-700 border border-emerald-300'
+                        : 'bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600'
+                    }`}
                   >
                     {amt >= 1000000 ? `${amt / 1000000}jt` : `${amt / 1000}rb`}
                   </button>
@@ -439,8 +476,9 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
 
             {/* Produk */}
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Nama Produk / Paket yang Dibeli
+              <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                <Package className="w-3.5 h-3.5 text-slate-400" />
+                Nama Produk / Paket
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
@@ -451,48 +489,50 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
                   value={productName}
                   onChange={(e) => setProductName(e.target.value)}
                   placeholder="Contoh: Paket Glowing 3in1"
-                  className="w-full pl-10 pr-3.5 py-2 rounded-xl border border-slate-200 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full pl-10 pr-3.5 py-2 rounded-xl border border-slate-200 text-sm text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                 />
               </div>
-              <div className="flex flex-wrap gap-1.5 mt-1.5">
-                {SAMPLE_PRODUCTS.map((prod) => (
-                  <button
-                    key={prod}
-                    type="button"
-                    onClick={() => setProductName(prod)}
-                    className="text-[11px] text-slate-600 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 px-2 py-0.5 rounded transition-colors"
-                  >
-                    + {prod}
-                  </button>
-                ))}
-              </div>
+              {productList.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  {productList.slice(0, 6).map((prod) => (
+                    <button
+                      key={prod}
+                      type="button"
+                      onClick={() => handleProductSelect(prod)}
+                      className={`text-[11px] px-2 py-0.5 rounded-md transition-all ${
+                        productName === prod
+                          ? 'bg-blue-100 text-blue-700 border border-blue-300'
+                          : 'text-slate-600 bg-slate-100 hover:bg-blue-50 hover:text-blue-700'
+                      }`}
+                    >
+                      + {prod}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Qty & Admin CS */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Qty / Jumlah Item
-                </label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Qty / Jumlah Item</label>
                 <input
                   type="number"
                   min="1"
                   value={quantity}
                   onChange={(e) => setQuantity(parseInt(e.target.value, 10) || 1)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Nama CS / Admin Closing
-                </label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Nama CS / Admin</label>
                 <input
                   type="text"
                   value={adminName}
                   onChange={(e) => setAdminName(e.target.value)}
                   placeholder="Nama CS"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                 />
               </div>
             </div>
@@ -508,20 +548,18 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
                   type="text"
                   value={orderId}
                   onChange={(e) => setOrderId(e.target.value)}
-                  className="w-full px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-mono text-slate-700 bg-slate-50"
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-mono text-slate-700 bg-slate-50 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Kode Iklan / fbclid (Opsional)
-                </label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Kode Iklan / fbclid</label>
                 <input
                   type="text"
                   value={fbclid}
                   onChange={(e) => setFbclid(e.target.value)}
                   placeholder="Misal: IG-ADS-01"
-                  className="w-full px-3 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-700"
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                 />
               </div>
             </div>
@@ -531,7 +569,7 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
         {/* Feedback Alert */}
         {resultStatus && (
           <div
-            className={`p-4 rounded-xl text-xs sm:text-sm flex items-start gap-3 transition-all ${
+            className={`p-4 rounded-xl text-xs sm:text-sm flex items-start gap-3 animate-slide-down ${
               resultStatus.type === 'success'
                 ? 'bg-emerald-50 text-emerald-900 border border-emerald-200'
                 : 'bg-rose-50 text-rose-900 border border-rose-200'
@@ -568,7 +606,9 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
             type="submit"
             disabled={isSubmitting}
             className={`w-full sm:w-auto px-7 py-3 rounded-xl text-white font-semibold text-sm shadow-md transition-all flex items-center justify-center gap-2 ${
-              eventType === 'Purchase'
+              submitSuccess
+                ? 'bg-emerald-500 btn-success-state'
+                : eventType === 'Purchase'
                 ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/20'
                 : 'bg-blue-600 hover:bg-blue-700 shadow-blue-600/20'
             }`}
@@ -577,6 +617,11 @@ export function ClosingForm({ config, onEventSent, onOpenSettings }: ClosingForm
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span>Mengirim ke Meta Ads CAPI...</span>
+              </>
+            ) : submitSuccess ? (
+              <>
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Berhasil Terkirim!</span>
               </>
             ) : (
               <>

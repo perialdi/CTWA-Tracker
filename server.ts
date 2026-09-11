@@ -2,29 +2,63 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import crypto from 'node:crypto';
 import { createServer as createViteServer } from 'vite';
+import rateLimit from 'express-rate-limit';
 
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+// =============================================
+// MIDDLEWARE
+// =============================================
 
-// Helper function to hash data according to Meta CAPI specification (SHA-256 hex)
+app.use(express.json({ limit: '2mb' }));
+
+// Rate limiting: max 120 requests per minute per IP
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Terlalu banyak permintaan. Harap tunggu 1 menit sebelum mencoba lagi.'
+  }
+});
+
+// Stricter limit for test-connection endpoint
+const testLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: {
+    success: false,
+    message: 'Terlalu banyak percobaan koneksi. Tunggu 1 menit.'
+  }
+});
+
+app.use('/api/', apiLimiter);
+
+// =============================================
+// HELPER FUNCTIONS
+// =============================================
+
+/**
+ * Hash data with SHA-256 according to Meta CAPI specification
+ */
 function hashSha256(value: string): string {
   if (!value) return '';
   const trimmed = value.trim().toLowerCase();
   return crypto.createHash('sha256').update(trimmed).digest('hex');
 }
 
-// Normalize Indonesian/International phone number according to Meta requirements:
-// Digits only, country code included, no leading zeros or symbols.
+/**
+ * Normalize Indonesian/International phone number to Meta format (digits only, with country code)
+ */
 function normalizePhoneNumber(phone: string): string {
   if (!phone) return '';
-  // Remove all non-digits except +
   let cleaned = phone.replace(/[^\d+]/g, '');
   if (cleaned.startsWith('+')) {
     cleaned = cleaned.substring(1);
   }
-  // If Indonesian number starts with '0', replace with '62'
   if (cleaned.startsWith('0')) {
     cleaned = '62' + cleaned.substring(1);
   } else if (cleaned.startsWith('8')) {
@@ -33,46 +67,62 @@ function normalizePhoneNumber(phone: string): string {
   return cleaned;
 }
 
-// Format Name into First and Last name
+/**
+ * Split full name into first and last name
+ */
 function splitName(fullName: string): { firstName: string; lastName: string } {
   if (!fullName) return { firstName: '', lastName: '' };
   const parts = fullName.trim().split(/\s+/);
-  if (parts.length === 1) {
-    return { firstName: parts[0], lastName: '' };
-  }
-  return {
-    firstName: parts[0],
-    lastName: parts.slice(1).join(' ')
-  };
+  if (parts.length === 1) return { firstName: parts[0], lastName: '' };
+  return { firstName: parts[0], lastName: parts.slice(1).join(' ') };
 }
 
-// Test Meta CAPI Credentials (Pixel ID & Access Token)
-app.post('/api/test-connection', async (req: Request, res: Response) => {
+/**
+ * Log with timestamp and context
+ */
+function log(level: 'INFO' | 'WARN' | 'ERROR', context: string, message: string, data?: any) {
+  const timestamp = new Date().toISOString();
+  const prefix = `[${timestamp}] [${level}] [${context}]`;
+  if (data) {
+    console[level === 'ERROR' ? 'error' : level === 'WARN' ? 'warn' : 'log'](`${prefix} ${message}`, data);
+  } else {
+    console[level === 'ERROR' ? 'error' : level === 'WARN' ? 'warn' : 'log'](`${prefix} ${message}`);
+  }
+}
+
+// =============================================
+// API ENDPOINTS
+// =============================================
+
+/**
+ * Test Meta CAPI Credentials (Pixel ID & Access Token)
+ */
+app.post('/api/test-connection', testLimiter, async (req: Request, res: Response) => {
   try {
     const { pixelId, accessToken } = req.body;
     const resolvedPixelId = (pixelId || process.env.META_PIXEL_ID || '').trim();
     const resolvedAccessToken = (accessToken || process.env.META_CAPI_ACCESS_TOKEN || '').trim();
 
     if (!resolvedPixelId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Pixel ID Meta belum diisi.'
-      });
+      return res.status(400).json({ success: false, message: 'Pixel ID Meta belum diisi.' });
+    }
+
+    // Validate Pixel ID format (should be 13-16 digit number)
+    if (!/^\d{13,16}$/.test(resolvedPixelId)) {
+      return res.status(400).json({ success: false, message: 'Pixel ID tidak valid. Harus berupa angka 13-16 digit.' });
     }
 
     if (!resolvedAccessToken) {
-      return res.status(400).json({
-        success: false,
-        message: 'Meta CAPI Access Token belum diisi.'
-      });
+      return res.status(400).json({ success: false, message: 'Meta CAPI Access Token belum diisi.' });
     }
 
     const response = await fetch(
-      `https://graph.facebook.com/v21.0/${resolvedPixelId}?fields=name,is_unavailable&access_token=${resolvedAccessToken}`
+      `https://graph.facebook.com/v22.0/${resolvedPixelId}?fields=name,is_unavailable&access_token=${resolvedAccessToken}`
     );
     const data = await response.json();
 
     if (!response.ok || data.error) {
+      log('WARN', 'test-connection', 'Connection test failed', data.error);
       return res.status(400).json({
         success: false,
         message: data.error?.message || 'Gagal memverifikasi token atau Pixel ID.',
@@ -80,6 +130,7 @@ app.post('/api/test-connection', async (req: Request, res: Response) => {
       });
     }
 
+    log('INFO', 'test-connection', `Connection verified for pixel: ${resolvedPixelId}`);
     return res.json({
       success: true,
       message: 'Koneksi ke Meta CAPI berhasil diverifikasi!',
@@ -87,6 +138,7 @@ app.post('/api/test-connection', async (req: Request, res: Response) => {
       pixelId: resolvedPixelId
     });
   } catch (error: any) {
+    log('ERROR', 'test-connection', 'Exception', error.message);
     return res.status(500).json({
       success: false,
       message: error.message || 'Terjadi kesalahan saat memeriksa koneksi ke Meta Graph API.'
@@ -94,7 +146,9 @@ app.post('/api/test-connection', async (req: Request, res: Response) => {
   }
 });
 
-// Endpoint to send event to Meta Conversions API
+/**
+ * Send event to Meta Conversions API
+ */
 app.post('/api/send-event', async (req: Request, res: Response) => {
   try {
     const {
@@ -126,6 +180,7 @@ app.post('/api/send-event', async (req: Request, res: Response) => {
     const resolvedAccessToken = (accessToken || process.env.META_CAPI_ACCESS_TOKEN || '').trim();
     const resolvedTestCode = (testEventCode || process.env.META_TEST_EVENT_CODE || '').trim();
 
+    // === Input Validation ===
     if (!resolvedPixelId) {
       return res.status(400).json({
         success: false,
@@ -147,15 +202,33 @@ app.post('/api/send-event', async (req: Request, res: Response) => {
       });
     }
 
-    // Process user data with SHA-256 hashing according to Meta standards
+    // Validate event name
+    const VALID_EVENTS = ['Purchase', 'Lead', 'InitiateCheckout', 'Contact', 'CompleteRegistration', 'ViewContent', 'AddToCart'];
+    if (!VALID_EVENTS.includes(eventName)) {
+      return res.status(400).json({
+        success: false,
+        message: `Event name tidak valid: ${eventName}. Valid: ${VALID_EVENTS.join(', ')}`
+      });
+    }
+
+    // Validate value for Purchase
+    const numericValue = parseFloat(value);
+    if (eventName === 'Purchase' && (isNaN(numericValue) || numericValue < 0)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nilai transaksi (value) untuk event Purchase harus berupa angka positif.'
+      });
+    }
+
+    // === Build User Data with SHA-256 Hashing ===
     const userData: Record<string, any> = {};
 
     if (phone) {
       const normalizedPhone = normalizePhoneNumber(phone);
-      userData.ph = [hashSha256(normalizedPhone)];
+      if (normalizedPhone) userData.ph = [hashSha256(normalizedPhone)];
     }
 
-    if (email) {
+    if (email && email.includes('@')) {
       userData.em = [hashSha256(email)];
     }
 
@@ -173,10 +246,10 @@ app.post('/api/send-event', async (req: Request, res: Response) => {
       userData.zp = [hashSha256(zipCode)];
     }
 
-    // Default country to Indonesia ('id') hashed if not specified
+    // Default country to Indonesia ('id') hashed
     userData.country = [hashSha256('id')];
 
-    // Add Client IP and User Agent to improve Meta Event Match Quality
+    // Add Client IP and User Agent
     const clientIp = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '';
     if (clientIp) {
       userData.client_ip_address = clientIp.split(',')[0].trim();
@@ -188,7 +261,6 @@ app.post('/api/send-event', async (req: Request, res: Response) => {
 
     // Add Click ID (fbc) or Browser ID (fbp) if available
     if (fbclid) {
-      // If user provided fbclid, format as fbc according to Meta standard: fb.1.<creationTime>.<fbclid>
       const now = Date.now();
       userData.fbc = fbclid.startsWith('fb.') ? fbclid : `fb.1.${now}.${fbclid}`;
     }
@@ -196,12 +268,11 @@ app.post('/api/send-event', async (req: Request, res: Response) => {
       userData.fbp = fbp;
     }
 
-    // Custom Data
+    // === Build Custom Data ===
     const customData: Record<string, any> = {
       currency: currency || 'IDR'
     };
 
-    const numericValue = parseFloat(value);
     if (!isNaN(numericValue) && numericValue > 0) {
       customData.value = numericValue;
     }
@@ -233,8 +304,14 @@ app.post('/api/send-event', async (req: Request, res: Response) => {
       customData.sales_rep = adminName;
     }
 
-    // Meta Event Object
-    const eventTimeUnix = eventTime ? Math.floor(new Date(eventTime).getTime() / 1000) : Math.floor(Date.now() / 1000);
+    if (notes) {
+      customData.description = notes;
+    }
+
+    // === Build Event Payload ===
+    const eventTimeUnix = eventTime
+      ? Math.floor(new Date(eventTime).getTime() / 1000)
+      : Math.floor(Date.now() / 1000);
     const eventId = `wa_event_${uniqueOrderId}_${eventTimeUnix}`;
 
     const eventPayload: Record<string, any> = {
@@ -251,24 +328,25 @@ app.post('/api/send-event', async (req: Request, res: Response) => {
       data: [eventPayload]
     };
 
-    // If test event code is provided, include it
     if (resolvedTestCode) {
       requestBody.test_event_code = resolvedTestCode;
     }
 
-    const metaApiUrl = `https://graph.facebook.com/v21.0/${resolvedPixelId}/events?access_token=${resolvedAccessToken}`;
+    // === Send to Meta CAPI ===
+    const metaApiUrl = `https://graph.facebook.com/v22.0/${resolvedPixelId}/events?access_token=${resolvedAccessToken}`;
+
+    log('INFO', 'send-event', `Sending ${eventName} event for order: ${uniqueOrderId}${resolvedTestCode ? ' [TEST]' : ''}`);
 
     const response = await fetch(metaApiUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody)
     });
 
     const metaResult = await response.json();
 
     if (!response.ok || metaResult.error) {
+      log('WARN', 'send-event', `Meta rejected event: ${uniqueOrderId}`, metaResult.error);
       return res.status(response.status >= 400 && response.status < 500 ? response.status : 400).json({
         success: false,
         message: metaResult.error?.message || 'Meta CAPI menolak data yang dikirim.',
@@ -277,6 +355,8 @@ app.post('/api/send-event', async (req: Request, res: Response) => {
         orderId: uniqueOrderId
       });
     }
+
+    log('INFO', 'send-event', `✅ Event sent successfully: ${uniqueOrderId} | fbtrace: ${metaResult.fbtrace_id}`);
 
     return res.json({
       success: true,
@@ -289,7 +369,7 @@ app.post('/api/send-event', async (req: Request, res: Response) => {
       rawMetaResponse: metaResult
     });
   } catch (error: any) {
-    console.error('Meta CAPI Error:', error);
+    log('ERROR', 'send-event', 'Exception during Meta CAPI request', error.message);
     return res.status(500).json({
       success: false,
       message: error.message || 'Terjadi kesalahan sistem internal saat mengirim event ke Meta CAPI.'
@@ -297,9 +377,11 @@ app.post('/api/send-event', async (req: Request, res: Response) => {
   }
 });
 
-// Start Express server with Vite middleware
+// =============================================
+// SERVER STARTUP
+// =============================================
+
 async function startServer() {
-  // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -315,7 +397,8 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    log('INFO', 'server', `🚀 CTWA Tracker running on http://0.0.0.0:${PORT}`);
+    log('INFO', 'server', `Meta Graph API version: v22.0`);
   });
 }
 

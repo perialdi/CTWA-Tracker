@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, ReactNode } from 'react';
 import { 
   Search, 
   Download, 
@@ -10,16 +10,43 @@ import {
   Trash2,
   X,
   Copy,
-  Check
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+  Calendar
 } from 'lucide-react';
 import { ClosingEvent, MetaCapiConfig } from '../types';
-import { formatRupiah, formatDateIndo, formatIndonesianPhone } from '../utils/formatters';
+import { formatRupiah, formatDateIndo, formatIndonesianPhone, exportToCsv } from '../utils/formatters';
+import { EmqIndicator } from './EmqIndicator';
 
 interface ClosingHistoryTableProps {
   events: ClosingEvent[];
   config: MetaCapiConfig;
   onClearHistory: () => void;
   onResendEvent: (event: ClosingEvent) => void;
+}
+
+type DateFilter = 'all' | 'today' | '7d' | '30d';
+
+const PAGE_SIZE = 10;
+
+function getDateFilterStart(filter: DateFilter): Date | null {
+  const now = new Date();
+  if (filter === 'today') {
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  }
+  if (filter === '7d') {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 7);
+    return d;
+  }
+  if (filter === '30d') {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 30);
+    return d;
+  }
+  return null;
 }
 
 export function ClosingHistoryTable({ 
@@ -30,10 +57,13 @@ export function ClosingHistoryTable({
 }: ClosingHistoryTableProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterEvent, setFilterEvent] = useState<string>('ALL');
+  const [dateFilter, setDateFilter] = useState<DateFilter>('all');
+  const [currentPage, setCurrentPage] = useState(1);
   const [selectedEventModal, setSelectedEventModal] = useState<ClosingEvent | null>(null);
   const [copiedJson, setCopiedJson] = useState(false);
 
   // Filtering
+  const dateStart = getDateFilterStart(dateFilter);
   const filteredEvents = events.filter((evt) => {
     const matchesSearch = 
       evt.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -44,65 +74,67 @@ export function ClosingHistoryTable({
 
     const matchesEvent = filterEvent === 'ALL' || evt.eventName === filterEvent;
 
-    return matchesSearch && matchesEvent;
+    const matchesDate = !dateStart || new Date(evt.createdAt) >= dateStart;
+
+    return matchesSearch && matchesEvent && matchesDate;
   });
 
   const totalFilteredOmset = filteredEvents
     .filter((e) => e.status === 'success' && e.eventName === 'Purchase')
     .reduce((sum, item) => sum + item.value, 0);
 
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(filteredEvents.length / PAGE_SIZE));
+  const safePage = Math.min(currentPage, totalPages);
+  const paginatedEvents = filteredEvents.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  const handleSearch = (val: string) => {
+    setSearchTerm(val);
+    setCurrentPage(1);
+  };
+
+  const handleFilterChange = (val: string) => {
+    setFilterEvent(val);
+    setCurrentPage(1);
+  };
+
+  const handleDateFilterChange = (val: DateFilter) => {
+    setDateFilter(val);
+    setCurrentPage(1);
+  };
+
   const handleExportCsv = () => {
-    if (filteredEvents.length === 0) {
-      alert('Tidak ada data yang bisa diekspor.');
-      return;
-    }
+    if (filteredEvents.length === 0) return;
 
     const headers = [
-      'Order ID',
-      'Waktu',
-      'Tipe Event',
-      'Nama Customer',
-      'No WhatsApp',
-      'Kota',
-      'Email',
-      'Produk',
-      'Qty',
-      'Nilai Omset (IDR)',
-      'Status Kualitas Lead',
-      'Nama CS',
-      'Status CAPI',
-      'Mode Uji',
-      'Event ID Meta',
-      'fbtrace_id'
+      'Order ID', 'Waktu', 'Tipe Event', 'Nama Customer', 'No WhatsApp',
+      'Kota', 'Email', 'Produk', 'Qty', 'Nilai Omset (IDR)',
+      'Status Lead', 'Nama CS', 'Status CAPI', 'Mode Uji', 'Event ID Meta', 'fbtrace_id'
     ];
 
     const rows = filteredEvents.map((e) => [
-      `"${e.orderId}"`,
-      `"${e.createdAt}"`,
-      `"${e.eventName}"`,
-      `"${e.customerName.replace(/"/g, '""')}"`,
-      `"${e.customerPhone}"`,
-      `"${e.customerCity || ''}"`,
-      `"${e.customerEmail || ''}"`,
-      `"${e.productName.replace(/"/g, '""')}"`,
-      e.quantity,
-      e.value,
-      `"${e.leadQuality || ''}"`,
-      `"${e.adminName}"`,
-      `"${e.status}"`,
+      e.orderId,
+      e.createdAt,
+      e.eventName,
+      e.customerName,
+      e.customerPhone,
+      e.customerCity || '',
+      e.customerEmail || '',
+      e.productName,
+      String(e.quantity),
+      String(e.value),
+      e.leadQuality || '',
+      e.adminName,
+      e.status,
       e.testMode ? 'Ya' : 'Tidak',
-      `"${e.eventId}"`,
-      `"${e.fbtraceId || ''}"`
+      e.eventId,
+      e.fbtraceId || ''
     ]);
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `rekap-closing-meta-capi-${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    exportToCsv(
+      [headers, ...rows],
+      `rekap-closing-meta-capi-${new Date().toISOString().slice(0, 10)}.csv`
+    );
   };
 
   const handleCopyJson = () => {
@@ -112,74 +144,103 @@ export function ClosingHistoryTable({
     setTimeout(() => setCopiedJson(false), 2000);
   };
 
-  return (
-    <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
-      {/* Header Toolbar */}
-      <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-base font-semibold text-slate-800 flex items-center gap-2">
-            <span>Riwayat Pengiriman Closing ke Meta CAPI</span>
-            <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
-              {filteredEvents.length} Data
-            </span>
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Total Omset Closing Terverifikasi:{' '}
-            <strong className="text-emerald-600 font-semibold">{formatRupiah(totalFilteredOmset)}</strong>
-          </p>
-        </div>
+  const DATE_FILTERS: { value: DateFilter; label: string }[] = [
+    { value: 'all', label: 'Semua' },
+    { value: 'today', label: 'Hari Ini' },
+    { value: '7d', label: '7 Hari' },
+    { value: '30d', label: '30 Hari' },
+  ];
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Search Bar */}
-          <div className="relative flex-1 sm:w-60">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Cari nama, no WA, produk..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-            />
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[var(--shadow-card)] overflow-hidden">
+      {/* Header Toolbar */}
+      <div className="p-4 sm:p-5 border-b border-slate-100">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-slate-800 flex items-center gap-2">
+              <span>Riwayat Pengiriman ke Meta CAPI</span>
+              <span className="text-xs font-normal text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+                {filteredEvents.length} data
+              </span>
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Total Omset Terverifikasi:{' '}
+              <strong className="text-emerald-600">{formatRupiah(totalFilteredOmset)}</strong>
+            </p>
           </div>
 
-          {/* Filter Event */}
-          <select
-            value={filterEvent}
-            onChange={(e) => setFilterEvent(e.target.value)}
-            className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-          >
-            <option value="ALL">Semua Event</option>
-            <option value="Purchase">Purchase (Closing)</option>
-            <option value="Lead">Lead (Prospek)</option>
-            <option value="InitiateCheckout">Initiate Checkout</option>
-            <option value="Contact">Contact</option>
-          </select>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Search Bar */}
+            <div className="relative flex-1 min-w-48">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Cari nama, no WA, produk..."
+                value={searchTerm}
+                onChange={(e) => handleSearch(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              />
+            </div>
 
-          {/* Export CSV */}
-          <button
-            type="button"
-            onClick={handleExportCsv}
-            className="px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-medium flex items-center gap-1.5 transition-colors"
-          >
-            <Download className="w-3.5 h-3.5 text-slate-500" />
-            <span>Ekspor CSV</span>
-          </button>
+            {/* Filter Event */}
+            <select
+              value={filterEvent}
+              onChange={(e) => handleFilterChange(e.target.value)}
+              className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            >
+              <option value="ALL">Semua Event</option>
+              <option value="Purchase">Purchase (Closing)</option>
+              <option value="Lead">Lead (Prospek)</option>
+              <option value="InitiateCheckout">Initiate Checkout</option>
+              <option value="Contact">Contact</option>
+            </select>
 
-          {/* Clear history */}
-          {events.length > 0 && (
+            {/* Export CSV */}
             <button
               type="button"
-              onClick={() => {
-                if (confirm('Hapus seluruh riwayat pengiriman lokal ini?')) {
-                  onClearHistory();
-                }
-              }}
-              title="Hapus riwayat lokal"
-              className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors"
+              onClick={handleExportCsv}
+              disabled={filteredEvents.length === 0}
+              className="px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <Trash2 className="w-4 h-4" />
+              <Download className="w-3.5 h-3.5 text-slate-500" />
+              <span>Ekspor CSV</span>
             </button>
-          )}
+
+            {/* Clear history */}
+            {events.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm('Hapus seluruh riwayat pengiriman lokal ini?')) {
+                    onClearHistory();
+                  }
+                }}
+                title="Hapus riwayat lokal"
+                className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Date Filter Tabs */}
+        <div className="flex items-center gap-1 mt-3">
+          <Calendar className="w-3.5 h-3.5 text-slate-400 mr-1" />
+          {DATE_FILTERS.map(({ value, label }) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => handleDateFilterChange(value)}
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+                dateFilter === value
+                  ? 'bg-slate-900 text-white'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -193,22 +254,30 @@ export function ClosingHistoryTable({
               <th className="py-3 px-4">Tipe Event</th>
               <th className="py-3 px-4">Produk & CS</th>
               <th className="py-3 px-4 text-right">Nilai Omset</th>
-              <th className="py-3 px-4 text-center">Status Meta CAPI</th>
+              <th className="py-3 px-4 text-center">Status</th>
               <th className="py-3 px-4 text-center">Aksi</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {filteredEvents.length === 0 ? (
+            {paginatedEvents.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-12 text-center text-slate-400">
-                  Belum ada data event closing yang dicatat. Silakan isi formulir di atas untuk mengirim data ke Meta Ads CAPI.
+                <td colSpan={7} className="py-16 text-center text-slate-400">
+                  <div className="flex flex-col items-center gap-2">
+                    <Filter className="w-8 h-8 opacity-30" />
+                    <p>
+                      {filteredEvents.length === 0 && events.length > 0
+                        ? 'Tidak ada data yang cocok dengan filter.'
+                        : 'Belum ada data event. Isi formulir di atas untuk memulai.'
+                      }
+                    </p>
+                  </div>
                 </td>
               </tr>
             ) : (
-              filteredEvents.map((evt) => {
+              paginatedEvents.map((evt) => {
                 const phoneInfo = formatIndonesianPhone(evt.customerPhone);
                 return (
-                  <tr key={evt.id} className="hover:bg-slate-50/70 transition-colors">
+                  <tr key={evt.id} className="hover:bg-slate-50/70 transition-colors table-row-enter">
                     <td className="py-3 px-4 whitespace-nowrap">
                       <div className="font-mono font-medium text-slate-800">{evt.orderId}</div>
                       <div className="text-[11px] text-slate-400">{formatDateIndo(evt.createdAt)}</div>
@@ -241,9 +310,20 @@ export function ClosingHistoryTable({
                         {evt.eventName}
                       </span>
                       {evt.testMode && (
-                        <span className="ml-1 inline-flex items-center gap-0.5 text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
+                        <span className="ml-1 inline-flex items-center gap-0.5 text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
                           <Sparkles className="w-2.5 h-2.5" /> Test
                         </span>
+                      )}
+                      {evt.emqScore !== undefined && (
+                        <div className="mt-1">
+                          <EmqIndicator
+                            phone={evt.customerPhone}
+                            name={evt.customerName}
+                            email={evt.customerEmail}
+                            city={evt.customerCity}
+                            compact
+                          />
+                        </div>
                       )}
                     </td>
 
@@ -307,10 +387,58 @@ export function ClosingHistoryTable({
         </table>
       </div>
 
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between">
+          <p className="text-xs text-slate-500">
+            Menampilkan {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, filteredEvents.length)} dari {filteredEvents.length} data
+          </p>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={safePage === 1}
+              className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+              let page: number;
+              if (totalPages <= 5) page = i + 1;
+              else if (safePage <= 3) page = i + 1;
+              else if (safePage >= totalPages - 2) page = totalPages - 4 + i;
+              else page = safePage - 2 + i;
+              return (
+                <button
+                  key={page}
+                  type="button"
+                  onClick={() => setCurrentPage(page)}
+                  className={`w-7 h-7 rounded-lg text-xs font-medium transition-colors ${
+                    page === safePage
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  {page}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={safePage === totalPages}
+              className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Log Detail Modal */}
       {selectedEventModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full border border-slate-200 overflow-hidden my-6">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-[var(--shadow-modal)] max-w-lg w-full border border-slate-200 overflow-hidden my-6 animate-scale-in">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <div>
                 <h3 className="text-base font-semibold text-slate-800">Detail Event Meta CAPI</h3>
@@ -319,40 +447,44 @@ export function ClosingHistoryTable({
               <button
                 type="button"
                 onClick={() => setSelectedEventModal(null)}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-5 space-y-3 max-h-[60vh] overflow-y-auto text-xs font-mono">
-              <div className="p-3 bg-slate-50 rounded-xl space-y-1.5 font-sans border border-slate-200">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Status Pengiriman:</span>
+            <div className="p-5 space-y-3 max-h-[60vh] overflow-y-auto modal-scroll">
+              {/* Summary */}
+              <div className="p-3 bg-slate-50 rounded-xl space-y-2 border border-slate-200">
+                <Row label="Status" value={
                   <span className={selectedEventModal.status === 'success' ? 'text-emerald-600 font-bold' : 'text-rose-600 font-bold'}>
                     {selectedEventModal.status.toUpperCase()}
                   </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Event ID (Deduplikasi):</span>
-                  <span className="font-mono text-slate-800">{selectedEventModal.eventId}</span>
-                </div>
+                } />
+                <Row label="Event Name" value={selectedEventModal.eventName} />
+                <Row label="Customer" value={`${selectedEventModal.customerName} — ${selectedEventModal.customerPhone}`} />
+                <Row label="Produk" value={`${selectedEventModal.productName} × ${selectedEventModal.quantity}`} />
+                {selectedEventModal.value > 0 && (
+                  <Row label="Nilai" value={<strong className="text-emerald-700">{formatRupiah(selectedEventModal.value)}</strong>} />
+                )}
+                <Row label="Event ID" value={<span className="font-mono text-slate-700 text-[11px]">{selectedEventModal.eventId}</span>} />
                 {selectedEventModal.fbtraceId && (
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Meta fbtrace_id:</span>
-                    <span className="font-mono text-blue-600">{selectedEventModal.fbtraceId}</span>
-                  </div>
+                  <Row label="fbtrace_id" value={<span className="font-mono text-blue-600 text-[11px]">{selectedEventModal.fbtraceId}</span>} />
+                )}
+                {selectedEventModal.emqScore !== undefined && (
+                  <Row label="EMQ Score" value={<span className="font-semibold">{selectedEventModal.emqScore}/100</span>} />
                 )}
                 {selectedEventModal.errorMessage && (
-                  <div className="mt-2 p-2 rounded bg-rose-50 text-rose-800 border border-rose-200">
-                    <strong>Pesan Kesalahan:</strong> {selectedEventModal.errorMessage}
+                  <div className="mt-2 p-2 rounded bg-rose-50 text-rose-800 border border-rose-200 text-xs">
+                    <strong>Error:</strong> {selectedEventModal.errorMessage}
                   </div>
                 )}
               </div>
 
+              {/* JSON */}
               <div>
-                <div className="flex items-center justify-between mb-1 font-sans">
-                  <span className="text-slate-600 font-semibold">Struktur Data Lengkap:</span>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs text-slate-600 font-semibold">Data Lengkap (JSON):</span>
                   <button
                     type="button"
                     onClick={handleCopyJson}
@@ -362,7 +494,7 @@ export function ClosingHistoryTable({
                     {copiedJson ? 'Tersalin' : 'Salin JSON'}
                   </button>
                 </div>
-                <pre className="p-3 bg-slate-900 text-slate-200 rounded-xl overflow-x-auto text-[11px] leading-relaxed">
+                <pre className="p-3 bg-slate-900 text-slate-200 rounded-xl overflow-x-auto text-[11px] leading-relaxed modal-scroll">
                   {JSON.stringify(selectedEventModal, null, 2)}
                 </pre>
               </div>
@@ -372,7 +504,7 @@ export function ClosingHistoryTable({
               <button
                 type="button"
                 onClick={() => setSelectedEventModal(null)}
-                className="px-4 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg"
+                className="px-4 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors"
               >
                 Tutup
               </button>
@@ -380,6 +512,15 @@ export function ClosingHistoryTable({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="flex justify-between items-start gap-3 text-xs">
+      <span className="text-slate-500 shrink-0">{label}:</span>
+      <span className="text-slate-800 text-right">{value}</span>
     </div>
   );
 }
